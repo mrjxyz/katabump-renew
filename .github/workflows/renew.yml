@@ -32,7 +32,7 @@ jobs:
         KATABUMP_PASSWORD: ${{ secrets.KATABUMP_PASSWORD }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        IS_PROXY: "true"
+        IS_PROXY: "false"  # 10-21 fix: runner has no 1081 proxy; direct works vs CF
         PROXY_SERVER: "http://127.0.0.1:1081"
       run: |
         xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \

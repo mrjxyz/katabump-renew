@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
+import sys
 import time
 import subprocess
 import requests
@@ -10,30 +12,39 @@ from seleniumbase import SB
 # 从环境变量获取账号密码和 TG 配置
 EMAIL        = os.environ.get("KATABUMP_EMAIL") or ""    # 登录邮箱
 PASSWORD     = os.environ.get("KATABUMP_PASSWORD") or "" # 账号密码
+EMAIL_2      = os.environ.get("KATABUMP_EMAIL_2") or ""    # 第二个账号（可选）
+PASSWORD_2   = os.environ.get("KATABUMP_PASSWORD_2") or "" # 第二个账号密码（可选）
 TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""        # tg通知 chat id(可选)
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""      # tg通知bot token(可选)
 
 BASE_URL = "https://dashboard.katabump.com"  # 网站链接
 
+def _mask_email(addr: str) -> str:
+    """邮箱脱敏：任何情况下都不输出完整明文"""
+    if not addr:
+        return "(未配置)"
+    if "@" not in addr:
+        return addr[:2] + "****"
+    name, domain = addr.split("@", 1)
+    if len(name) > 4:
+        return f"{name[:2]}****{name[-2:]}@{domain}"
+    if len(name) > 1:
+        return f"{name[0]}****@{domain}"
+    return f"****@{domain}"
+
+
 #  Telegram 推送模块
-def send_tg_message(status_icon, status_text, time_left=""):
+def send_tg_message(status_icon, status_text, time_left="", email=None):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         print("ℹ️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 推送。")
         return
+    email = email if email is not None else EMAIL
 
     # 获取北京时间 (UTC+8)
     local_time = time.gmtime(time.time() + 8 * 3600)
     current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
 
-    # 邮箱脱敏：保留用户名前2位和后2位，中间用****代替
-    if '@' in EMAIL:
-        name, domain = EMAIL.split('@', 1)
-        if len(name) > 4:
-            masked_email = f"{name[:2]}****{name[-2:]}@{domain}"
-        else:
-            masked_email = f"{name}@{domain}"
-    else:
-        masked_email = EMAIL[:2] + '****'
+    masked_email = _mask_email(email)
 
     text = (
         f"🇫🇷 katabump 续期通知\n\n"
@@ -244,7 +255,9 @@ def handle_turnstile(sb) -> bool:
     return False
 
 #  账户登录
-def login(sb) -> bool:
+def login(sb, email=None, password=None) -> bool:
+    email = email if email is not None else EMAIL
+    password = password if password is not None else PASSWORD
     print(f"🌐 打开登录页面: {BASE_URL}/auth/login")
     sb.uc_open_with_reconnect(BASE_URL + "/auth/login", reconnect_time=8)
     time.sleep(8)
@@ -288,11 +301,11 @@ def login(sb) -> bool:
         pass
 
     print(f"📧 填写邮箱...")
-    js_fill_input(sb, 'input[type="email"]', EMAIL)
+    js_fill_input(sb, 'input[type="email"]', email)
     time.sleep(1)
     
     print("🔑 填写密码...")
-    js_fill_input(sb, 'input[type="password"]', PASSWORD)
+    js_fill_input(sb, 'input[type="password"]', password)
     time.sleep(3)
 
     # 等待 Turnstile 验证框出现（最多 10 秒）
@@ -606,11 +619,88 @@ def renew_server(sb):
     _check_renew_result(sb)
 
 
+# ===== 域名状态检查（KataBump 实为域名托管站，两账号均无服务器实例可续期） =====
+def check_domains(sb):
+    """访问 My domains 页抓 kdns.fr 域名与状态。返回 (域名列表, 状态关键字)；失败/疑似CF页返回 ([], [])"""
+    print("\n🖥️  正在进入域名管理页...")
+    try:
+        sb.uc_open_with_reconnect(BASE_URL + "/domains/", reconnect_time=6)
+    except Exception as e:
+        print(f"❌ 打开域名页失败: {e}")
+        return None
+
+    ready = False
+    for sel in ("table tbody tr", "table", "main"):
+        try:
+            sb.wait_for_element(sel, timeout=15)
+            ready = True
+            break
+        except Exception:
+            continue
+    if not ready:
+        print("⚠️ 域名页未渲染出表格（可能被 CF 拦截或结构变化）")
+
+    try:
+        text = sb.get_text("body") or ""
+    except Exception as e:
+        print(f"⚠️ 读取域名页失败: {e}")
+        return None
+
+    low = text.lower()
+    if not ready or "just a moment" in low or "attention required" in low:
+        print("⚠️ 疑似停留在 Cloudflare 挑战页，本次结果不可信")
+        return None
+
+    doms = sorted(set(re.findall(r"\b[A-Za-z0-9][A-Za-z0-9-]*\.kdns\.fr\b", text)))
+
+    rows = []
+    try:
+        for tr in sb.find_elements("table tbody tr"):
+            cells = [(td.text or "").strip() for td in tr.find_elements("css selector", "td")]
+            if any(".kdns.fr" in c for c in cells):
+                rows.append(cells)
+    except Exception:
+        pass
+
+    kw = ("Active", "Pending", "Expired", "DNSSEC", "Disabled", "Renew")
+    if rows:
+        flags = sorted({k for cells in rows for k in kw if any(k.lower() in c.lower() for c in cells)})
+    else:
+        flags = [k for k in kw if k.lower() in low]
+
+    print(f"📋 识别到 {len(doms)} 个 kdns.fr 域: {', '.join(doms) if doms else '（无）'}")
+    print(f"🏷️  域名状态关键字: {', '.join(flags) if flags else '（未识别到）'}")
+    for cells in rows:
+        print("   • " + " | ".join(cells))
+    if not rows and doms:
+        for d in doms:
+            idx = text.find(d)
+            snippet = " ".join(text[max(0, idx - 30): idx + 70].split())
+            print(f"   • {d} → …{snippet}…")
+    return doms, flags
+
+
 #  脚本执行入口 (可选代理)
 def main():
     print("#" * 25)
-    print("   katabump 自动登录续期")
+    print("   katabump 自动保活 + 域名检查")
     print("#" * 25)
+
+    accounts = []
+    if EMAIL and PASSWORD:
+        accounts.append((EMAIL, PASSWORD))
+    elif EMAIL or PASSWORD:
+        print("⚠️ 主号只配置了邮箱或密码之一，已跳过")
+    if EMAIL_2 and PASSWORD_2:
+        accounts.append((EMAIL_2, PASSWORD_2))
+    elif EMAIL_2 or PASSWORD_2:
+        print("⚠️ 第二账号只配置了邮箱或密码之一，已跳过")
+    else:
+        print("ℹ️ 未配置第二账号（KATABUMP_EMAIL_2/PASSWORD_2 为空），单账号模式")
+    if not accounts:
+        print("❌ 未配置任何账号（KATABUMP_EMAIL/PASSWORD 或 _2），终止。")
+        sys.exit(1)
+    print(f"👥 本次待处理账号数: {len(accounts)}")
 
     IS_PROXY = os.environ.get("IS_PROXY", "false").lower() == "true"
     proxy_str = os.environ.get("PROXY_SERVER", "").strip() or "http://127.0.0.1:1081"
@@ -621,21 +711,48 @@ def main():
         sb_kwargs["proxy"] = proxy_str
     else:
         print("🌐 未使用代理，直连访问")
-    
-    print("🚀 启动浏览器...")
-    with SB(**sb_kwargs) as sb:
-        # print("✅ 浏览器已启动")
-        try:
-            sb.open("https://api.ip.sb/ip")
-            print(f"📍  当前出口IP: {sb.get_text('body')}")
-        except Exception:
-            pass
 
-        if login(sb):
-            renew_server(sb)   # 登录成功后自动续期
-        else:
-            print("\n❌ 登录失败，终止后续续期操作。")
-            send_tg_message("❌", "登录失败", "未知")
+    failures = []
+    for idx, (em, pw) in enumerate(accounts, 1):
+        masked = _mask_email(em)
+        print("\n" + "=" * 50)
+        print(f"▶️  账号 {idx}/{len(accounts)}: {masked}")
+        print("=" * 50)
+        print("🚀 启动浏览器...")
+        try:
+            with SB(**sb_kwargs) as sb:
+                try:
+                    sb.open("https://api.ip.sb/ip")
+                    print(f"📍  当前出口IP: {sb.get_text('body')}")
+                except Exception:
+                    pass
+
+                if not login(sb, em, pw):
+                    print("\n❌ 登录失败，终止该账号后续操作。")
+                    send_tg_message("❌", "登录失败", "未知", email=em)
+                    failures.append(f"{masked}: 登录失败")
+                else:
+                    res = check_domains(sb)
+                    if res is None:
+                        failures.append(f"{masked}: 域名页不可用（CF 拦截或结构变化）")
+                        send_tg_message("⚠️", "域名页不可用，请人工确认", email=em)
+                    else:
+                        doms, flags = res
+                        if not doms:
+                            print("⚠️ 域名页已渲染但没有 kdns.fr 域名，按告警处理（不算失败）")
+                        send_tg_message("✅", f"登录成功并保活；域名 {len(doms)} 个，状态: {', '.join(flags) or '未识别'}", email=em)
+        except Exception as e:
+            print(f"💥 账号 {masked} 执行异常: {type(e).__name__}: {e}")
+            failures.append(f"{masked}: 异常 {type(e).__name__}")
+            send_tg_message("💥", f"脚本执行异常: {type(e).__name__}", email=em)
+        finally:
+            time.sleep(3)
+
+    if failures:
+        print("\n❌ 本次存在失败账号: " + "; ".join(failures))
+        sys.exit(1)
+    print("\n✅ 全部账号执行成功")
+
 
 if __name__ == "__main__":
     main()

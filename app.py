@@ -358,7 +358,7 @@ def _read_alert(sb):
         return ""
 
 
-def _goto_server_detail(sb) -> bool:
+def _goto_server_detail(sb, email=None) -> bool:
     """在 Dashboard 首页查找并点击 See 进入服务器详情页"""
     print("\n🖥️  正在进入服务器续期页...")
     time.sleep(5)
@@ -367,7 +367,7 @@ def _goto_server_detail(sb) -> bool:
     alert_text = _read_alert(sb)
     if alert_text and "can't renew" in alert_text.lower():
         print(f"ℹ️  页面顶部提示: {alert_text}")
-        send_tg_message("ℹ️", "⚠️ 未到续期时间", alert_text)
+        send_tg_message("ℹ️", "⚠️ 未到续期时间", alert_text, email=email)
         return False
 
     # 多种选择器尝试查找 See 链接
@@ -577,7 +577,7 @@ def _submit_renew(sb):
     time.sleep(8)
 
 
-def _check_renew_result(sb):
+def _check_renew_result(sb, email=None):
     """读取页面 alert 提示，判断续期结果并推送 TG 通知"""
     print("\n📋 检查续期结果...")
     alert_text = _read_alert(sb)
@@ -589,23 +589,27 @@ def _check_renew_result(sb):
         print(f"📩 页面提示: {alert_text}")
         low = alert_text.lower()
         if "can't renew" in low or "unable" in low:
-            send_tg_message("⏳", "未到续期时间", alert_text)
+            send_tg_message("⏳", "未到续期时间", alert_text, email=email)
         elif any(kw in low for kw in ( "renewed", "success", "extended")):
-            send_tg_message("✅", "续期成功", alert_text)
+            send_tg_message("✅", "续期成功", alert_text, email=email)
         else:
-            send_tg_message("ℹ️", "续期操作已执行", alert_text)
+            send_tg_message("ℹ️", "续期操作已执行", alert_text, email=email)
     else:
         print("ℹ️ 未检测到明确的提示框，可能续期操作未生效")
-        send_tg_message("ℹ️", "续期操作已执行", "未检测到明确提示")
+        send_tg_message("ℹ️", "续期操作已执行", "未检测到明确提示", email=email)
 
 
-def renew_server(sb):
-    """登录成功后调用：自动进入详情页 -> Renew -> ALTCHA -> 提交"""
+def renew_server(sb, email=None):
+    """登录成功后调用：自动进入详情页 -> Renew -> ALTCHA -> 提交
+
+    注意：多账号下调用方必须传 email=当前账号，否则 TG 会推成账号1。
+    当前两账号均无服务器实例，此路径暂不触发（main 走 check_domains）。
+    """
     print("\n" + "#" * 25)
     print("  开始自动续期流程")
     print("#" * 25)
 
-    if not _goto_server_detail(sb):
+    if not _goto_server_detail(sb, email=email):
         return
 
     if not _open_renew_modal(sb):
@@ -616,7 +620,7 @@ def renew_server(sb):
     #     print("⚠️ ALTCHA 验证未通过，仍尝试提交 Renew...")
 
     _submit_renew(sb)
-    _check_renew_result(sb)
+    _check_renew_result(sb, email=email)
 
 
 # ===== 域名状态检查（KataBump 实为域名托管站，两账号均无服务器实例可续期） =====

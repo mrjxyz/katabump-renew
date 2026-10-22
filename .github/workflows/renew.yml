@@ -30,6 +30,8 @@ jobs:
       env:
         KATABUMP_EMAIL: ${{ secrets.KATABUMP_EMAIL }}
         KATABUMP_PASSWORD: ${{ secrets.KATABUMP_PASSWORD }}
+        KATABUMP_EMAIL_2: ${{ secrets.KATABUMP_EMAIL_2 }}
+        KATABUMP_PASSWORD_2: ${{ secrets.KATABUMP_PASSWORD_2 }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         IS_PROXY: "false"  # 10-21 fix: runner has no 1081 proxy; direct works vs CF
